@@ -201,8 +201,8 @@
   <div class="key-row">
     <div class="key-box" style="flex:2;min-width:420px;">
       <label>SUPABASE</label>
-      <input type="text" id="supabase-url" placeholder="https://xxxx.supabase.co" autocomplete="off" style="flex:2;">
-      <input type="text" id="supabase-anon-key" placeholder="anon public key" autocomplete="off" style="flex:2;">
+      <input type="text" id="supabase-url" placeholder="https://xxxx.supabase.co" autocomplete="off" style="flex:2;" value="https://qmfpujeafypgsfwfrzpx.supabase.co">
+      <input type="text" id="supabase-anon-key" placeholder="anon public key" autocomplete="off" style="flex:2;" value="sb_publishable_RNeV-R6nFanPQ5s6yNj8Gw_cowsP6TZ">
       <button class="small" onclick="connectSupabase()">연결/저장</button>
       <button class="small" onclick="migrateLocalToSupabase()">로컬 데이터 업로드</button>
       <div class="key-note">
@@ -321,6 +321,10 @@ let modalRenderSeq = 0; // 모달을 열 때마다 증가 — 캔버스 id를 �
 ========================================================================= */
 const LOCAL_STORAGE_PREFIX = 'kpharma_';
 const SUPABASE_TABLE = 'kpharma_kv';
+// 파일에 기본값으로 내장 — 별도 입력 없이도 바로 연결됩니다.
+// (anon key는 공개 가능한 클라이언트용 키지만, 이 파일을 공유하면 이 Supabase 테이블도 같이 노출됩니다.)
+const DEFAULT_SUPABASE_URL = 'https://qmfpujeafypgsfwfrzpx.supabase.co';
+const DEFAULT_SUPABASE_ANON_KEY = 'sb_publishable_RNeV-R6nFanPQ5s6yNj8Gw_cowsP6TZ';
 let supabaseClient = null;
 
 function storageIsAvailable(){
@@ -400,19 +404,46 @@ async function supabaseSetRaw(key, value){
 }
 async function migrateLocalToSupabase(){
   if(!supabaseReady()){ alert('먼저 Supabase에 연결해주세요 ("연결/저장" 버튼).'); return; }
-  if(!confirm('현재 이 브라우저에 저장된 테마/기업/실적/주가 데이터를 Supabase로 업로드할까요? (Supabase에 이미 같은 키가 있으면 덮어씁니다)')) return;
-  log('로컬 데이터를 Supabase로 업로드하는 중…', 'info');
-  const keys = ['pf_categories','pf_companies','pf_financials','pf_prices','pf_price_history'];
-  let ok = 0, fail = 0;
-  for(const key of keys){
+  const compCount = portfolio.length;
+  const finCount = Object.keys(financialsCache).length;
+  const priceCount = Object.keys(priceCache).length;
+  if(!confirm(`지금 화면 기준 — 기업 ${compCount}개, 실적 데이터 ${finCount}개 종목, 주가 데이터 ${priceCount}개 종목을 Supabase로 업로드합니다.\n이 숫자가 예상과 다르면 취소하고 화면을 먼저 확인해주세요. 계속할까요?`)) return;
+  log('현재 화면에 로드된 데이터를 Supabase로 업로드하는 중…', 'info');
+
+  // localStorage를 다시 읽지 않고, 지금 화면 렌더링에 실제로 쓰이고 있는 메모리 상의 값을
+  // 그대로 올립니다. 화면에 정상적으로 보이는 데이터라면 이 값도 반드시 정확합니다.
+  const jsonPayload = {
+    pf_categories: categories,
+    pf_companies: portfolio,
+    pf_financials: financialsCache,
+    pf_prices: priceCache,
+    pf_price_history: priceHistoryCache,
+  };
+  let ok = 0, fail = 0, skipped = 0;
+
+  for(const [key, val] of Object.entries(jsonPayload)){
     try{
-      const raw = window.localStorage.getItem(LOCAL_STORAGE_PREFIX + key);
-      const val = raw!==null ? JSON.parse(raw) : (key==='pf_categories'||key==='pf_companies' ? [] : {});
       const success = await supabaseSetRaw(key, val);
       if(success) ok++; else fail++;
     }catch(e){ fail++; log(`업로드 실패 (${key}): ${e.message}`, 'fail'); }
   }
-  log(`Supabase 업로드 완료 (성공 ${ok}건, 실패 ${fail}건). 새로고침해서 정상적으로 불러와지는지 확인해보세요.`, ok>0 ? 'ok' : 'fail');
+
+  // API 키는 입력창에 지금 보이는 값 기준으로 올립니다 (마찬가지로 화면 = 실제 사용 중인 값).
+  const stringPayload = {
+    pf_dart_key: getDartKey(),
+    pf_krx_key: getKrxKey(),
+    pf_naver_client_id: getNaverClientId(),
+    pf_naver_client_secret: getNaverClientSecret(),
+  };
+  for(const [key, val] of Object.entries(stringPayload)){
+    if(!val){ skipped++; continue; } // 입력창이 비어있으면 건너뜀 (빈 값으로 덮어쓰지 않음)
+    try{
+      const success = await supabaseSetRaw(key, val);
+      if(success) ok++; else fail++;
+    }catch(e){ fail++; log(`업로드 실패 (${key}): ${e.message}`, 'fail'); }
+  }
+
+  log(`Supabase 업로드 완료 (성공 ${ok}건, 실패 ${fail}건, 건너뜀 ${skipped}건 — 지금 화면 기준). 다른 브라우저/기기에서 새로고침해서 확인해보세요.`, ok>0 ? 'ok' : 'fail');
 }
 
 async function loadJSON(key, fallback){
@@ -1491,10 +1522,13 @@ async function init(){
   await ensureStorageReady(2500);
 
   // Supabase는 그 다음 loadJSON 호출들이 어디서 데이터를 읽을지 결정하므로, 가장 먼저 연결을 시도합니다.
-  const [savedSbUrl, savedSbKey] = await Promise.all([
+  // 사용자가 직접 입력/저장한 값이 있으면 그걸 우선하고, 없으면 파일에 내장된 기본값을 씁니다.
+  const [savedSbUrlRaw, savedSbKeyRaw] = await Promise.all([
     (async()=>{ try{ return window.localStorage.getItem(LOCAL_STORAGE_PREFIX+'pf_supabase_url') || ''; }catch(e){ return ''; } })(),
     (async()=>{ try{ return window.localStorage.getItem(LOCAL_STORAGE_PREFIX+'pf_supabase_anon_key') || ''; }catch(e){ return ''; } })(),
   ]);
+  const savedSbUrl = savedSbUrlRaw || DEFAULT_SUPABASE_URL;
+  const savedSbKey = savedSbKeyRaw || DEFAULT_SUPABASE_ANON_KEY;
   if(savedSbUrl) document.getElementById('supabase-url').value = savedSbUrl;
   if(savedSbKey) document.getElementById('supabase-anon-key').value = savedSbKey;
   if(savedSbUrl && savedSbKey){

@@ -658,6 +658,41 @@ function computeReturns(series){
   };
 }
 
+// KRX 히스토리(/api/krx-history)는 당일 시세(/api/krx-quote)보다 며칠 늦게 갱신되는 경우가
+// 흔합니다. 그래서 두 값을 각각 그냥 쓰면 "현재가"는 최신인데 1년 히스토리·상대주가 차트·
+// 수익률은 며칠 전 기준으로 어긋나게 됩니다. 당일 시세가 히스토리 마지막 날짜보다 최신이면
+// 그 값을 히스토리 끝에 이어붙여서 항상 최신 기준으로 맞춥니다.
+function mergeLatestQuoteIntoHistory(ticker){
+  const hist = priceHistoryCache[ticker];
+  const quote = priceCache[ticker];
+  if(!hist || !Array.isArray(hist.series) || hist.series.length===0) return false;
+  if(!quote || quote.close==null || !quote.date) return false;
+
+  const quoteDateStr = /^\d{8}$/.test(quote.date)
+    ? `${quote.date.slice(0,4)}-${quote.date.slice(4,6)}-${quote.date.slice(6,8)}`
+    : quote.date;
+  const lastPoint = hist.series[hist.series.length-1];
+  if(!lastPoint) return false;
+
+  let changed = false;
+  if(quoteDateStr > lastPoint.date){
+    hist.series.push({date: quoteDateStr, close: quote.close});
+    changed = true;
+  } else if(quoteDateStr === lastPoint.date && quote.close !== lastPoint.close){
+    hist.series[hist.series.length-1] = {date: quoteDateStr, close: quote.close};
+    changed = true;
+  }
+  if(!changed) return false;
+
+  const parsed = hist.series
+    .map(pt => ({date: new Date(pt.date), close: pt.close}))
+    .filter(pt => !isNaN(pt.date.getTime()) && pt.close!=null)
+    .sort((a,b)=>a.date-b.date);
+  hist.returns = computeReturns(parsed);
+  hist.updatedAt = new Date().toISOString();
+  return true;
+}
+
 /* =========================================================================
    테마 관리
 ========================================================================= */
@@ -702,6 +737,10 @@ async function refreshSingleCompanyPrice(ticker){
   if(btn){ btn.disabled = true; btn.classList.add('spinning'); btn.textContent = '갱신 중…'; }
   await fetchPriceForCompany(ticker);
   await fetchPriceHistoryForCompany(ticker);
+  if(mergeLatestQuoteIntoHistory(ticker)){
+    await saveJSON('pf_price_history', priceHistoryCache);
+    log(`${p.name}: 당일 시세를 히스토리에 반영해 최신 기준으로 맞췄습니다.`, 'info');
+  }
   refreshRow(ticker);
   safeRenderChart(renderRelativeChart, '상대 주가 차트');
   if(currentModalTicker===ticker) openModal(ticker);
@@ -1235,6 +1274,9 @@ async function refreshAllPrices(){
     refreshRow(p.ticker);
     await sleep(150);
     await fetchPriceHistoryForCompany(p.ticker);
+    if(mergeLatestQuoteIntoHistory(p.ticker)){
+      await saveJSON('pf_price_history', priceHistoryCache);
+    }
     refreshRow(p.ticker);
     if(currentModalTicker===p.ticker) openModal(p.ticker);
     await sleep(150);

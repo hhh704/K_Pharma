@@ -882,6 +882,9 @@ function rowHtml(p){
   const price = priceCache[p.ticker];
   const hist = priceHistoryCache[p.ticker];
   const ret = hist ? hist.returns : null;
+  // 일간 수익률은 3거래일 샘플링된 히스토리에서 추정하면 부정확할 수 있어,
+  // KRX 당일 시세가 이미 정확히 계산해서 주는 전일 대비 등락률(FLUC_RT)을 우선 사용합니다.
+  const dailyReturn = (price && price.changePct!=null) ? price.changePct : ret?.daily;
   const years = fin && fin.annual ? Object.keys(fin.annual).sort() : [];
   const latestYear = years[years.length-1];
   const a = latestYear ? fin.annual[latestYear] : null;
@@ -892,7 +895,7 @@ function rowHtml(p){
   return `<tr onclick="openModal('${p.ticker}')" id="row-${p.ticker}">
     <td class="name-cell"><span class="tkr">${p.name}</span><span class="full">${p.ticker} · ${p.market}${latestYear?` · ${latestYear}년 기준`:''}</span></td>
     <td>${priceCell}</td>
-    ${retCell(ret?.daily)}
+    ${retCell(dailyReturn)}
     ${retCell(ret?.weekly)}
     ${retCell(ret?.monthly)}
     ${retCell(ret?.quarterly)}
@@ -1308,6 +1311,7 @@ function openModal(ticker){
   const price = priceCache[ticker];
   const hist = priceHistoryCache[ticker];
   const ret = hist ? hist.returns : null;
+  const dailyReturn = (price && price.changePct!=null) ? price.changePct : ret?.daily;
   modalRenderSeq++;
   const seq = modalRenderSeq;
   const idPrice = `chart-price-${seq}`, idAnnual = `chart-annual-${seq}`, idQuarterly = `chart-quarterly-${seq}`;
@@ -1326,10 +1330,12 @@ function openModal(ticker){
     <div class="ret-badge-row">
       ${['daily','weekly','monthly','quarterly','half','annual','ytd'].map(k=>{
         const labels = {daily:'일간',weekly:'주간',monthly:'월간',quarterly:'3개월',half:'6개월',annual:'1년',ytd:'YTD'};
-        const f = fmtPct(ret ? ret[k] : null);
+        const val = k==='daily' ? dailyReturn : (ret ? ret[k] : null);
+        const f = fmtPct(val);
         return `<div class="ret-badge"><label>${labels[k]}</label><span class="${f.cls}">${f.text}</span></div>`;
       }).join('')}
     </div>
+    ${(price && price.changePct!=null) ? `<div class="section-note" style="margin:4px 0 0;">일간은 KRX 당일 시세의 전일 대비 등락률(정확), 나머지 기간은 1년 히스토리(3거래일 간격 샘플링) 기준 추정치입니다.</div>` : ''}
     ${hist ? `<div class="section-note" style="margin:4px 0 0;">주가 데이터 기준일: ${hist.series[hist.series.length-1]?.date || '-'} · 갱신: ${new Date(hist.updatedAt).toLocaleString('ko-KR')}</div>` : `<div class="section-note" style="margin:4px 0 0;">아직 주가 히스토리가 없습니다. 상단 "전체 종목 주가 일괄 갱신"을 눌러주세요.</div>`}
 
     <div class="manual-form">
